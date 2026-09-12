@@ -391,6 +391,12 @@ def parse_args() -> argparse.Namespace:
         choices=["fp8", "mxfp8", "mxfp4", "mxfp4_dualscale", "int8"],
         help="Quantization method for the transformer. mxfp8: W8A8 MXFP8 (NPU). mxfp4: W4A4 MXFP4 (NPU). mxfp4_dualscale: W4A4 MXFP4 dual-scale + BF16 fallback mixed (NPU). fp8: online FP8 (GPU).",
     )
+    parser.add_argument(
+        "--linear-backend",
+        type=str,
+        default=None,
+        help="vLLM linear backend (use flashinfer_cutlass for SVDQuant MXFP4 on B200/B300).",
+    )
 
     # Distributed and parallel execution
     parser.add_argument(
@@ -572,6 +578,8 @@ def main():
         omni_kwargs["flow_shift"] = args.flow_shift
     if args.quantization is not None:
         omni_kwargs["quantization"] = args.quantization
+    if args.linear_backend is not None:
+        omni_kwargs["linear_backend"] = args.linear_backend
     if args.cache_backend is not None:
         omni_kwargs["cache_backend"] = args.cache_backend
         omni_kwargs["cache_config"] = cache_config

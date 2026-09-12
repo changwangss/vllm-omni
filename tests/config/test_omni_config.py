@@ -242,6 +242,17 @@ def test_from_pipeline_config_applies_cli_overrides_without_stage_config_runtime
     assert stage1.runtime_config.num_gpus == stage1.parallel_config.world_size
 
 
+def test_from_pipeline_config_applies_diffusion_linear_backend():
+    omni_config = _from_pipeline_key(
+        "wan2_2_ti2v",
+        cli_overrides={"linear_backend": "flashinfer_cutlass"},
+    )
+
+    stage = omni_config.stage_by_id(0)
+
+    assert stage.diffusion_config.linear_backend == "flashinfer_cutlass"
+
+
 @pytest.mark.parametrize(
     "cli_overrides",
     [

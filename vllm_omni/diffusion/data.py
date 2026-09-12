@@ -910,6 +910,8 @@ class OmniDiffusionConfig:
 
     # MoE kernel backend selection
     moe_backend: str = "auto"
+    # vLLM quantized linear kernel backend selection.
+    linear_backend: str = "auto"
 
     # Compilation
     enforce_eager: bool = False

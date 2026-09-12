@@ -215,6 +215,15 @@ def test_dense_config_keeps_new_paged_sizing_inputs_inactive() -> None:
     assert vllm_config.scheduler_config.max_num_batched_tokens == original_token_budget
 
 
+def test_diffusion_config_forwards_linear_backend_to_native_kernel_config() -> None:
+    vllm_config = diffusion_vllm_config.create_diffusion_vllm_config(
+        torch.device("cpu"),
+        _od_config(linear_backend="flashinfer_cutlass"),
+    )
+
+    assert vllm_config.kernel_config.linear_backend == "flashinfer_cutlass"
+
+
 def test_paged_config_forwards_gpu_memory_utilization_to_native_cache_config() -> None:
     vllm_config = diffusion_vllm_config.create_diffusion_vllm_config(
         torch.device("cpu"),
