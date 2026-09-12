@@ -373,18 +373,39 @@ class WanSelfAttention(nn.Module):
         self.head_dim = head_dim
         self.inner_dim = num_heads * head_dim
 
-        # Fused QKV projection using vLLM's optimized layer
-        self.to_qkv = QKVParallelLinear(
-            hidden_size=dim,
-            head_size=head_dim,
-            total_num_heads=num_heads,
-            bias=True,
-            quant_config=quant_config,
-            prefix=f"{prefix}.to_qkv" if prefix else "to_qkv",
-        )
-
-        self.num_heads = self.to_qkv.num_heads
-        self.num_kv_heads = self.to_qkv.num_kv_heads
+        self.fuse_qkv = getattr(quant_config, "fuse_qkv", True)
+        if self.fuse_qkv:
+            self.to_qkv = QKVParallelLinear(
+                hidden_size=dim,
+                head_size=head_dim,
+                total_num_heads=num_heads,
+                bias=True,
+                quant_config=quant_config,
+                prefix=f"{prefix}.to_qkv" if prefix else "to_qkv",
+            )
+            self.num_heads = self.to_qkv.num_heads
+            self.num_kv_heads = self.to_qkv.num_kv_heads
+        else:
+            # Independently decomposed SVDQuant projections may have different
+            # input smoothing and low-rank factors, so they cannot share a GEMM.
+            tp_size = get_tensor_model_parallel_world_size()
+            if num_heads % tp_size:
+                raise ValueError("Independent Wan QKV requires attention heads divisible by TP size")
+            self.num_heads = self.num_kv_heads = num_heads // tp_size
+            for name in ("to_q", "to_k", "to_v"):
+                setattr(
+                    self,
+                    name,
+                    ColumnParallelLinear(
+                        dim,
+                        self.inner_dim,
+                        bias=True,
+                        gather_output=False,
+                        return_bias=False,
+                        quant_config=quant_config,
+                        prefix=f"{prefix}.{name}" if prefix else name,
+                    ),
+                )
         self.tp_inner_dim = self.num_heads * head_dim
 
         # QK normalization using vLLM's RMSNorm
@@ -443,12 +464,15 @@ class WanSelfAttention(nn.Module):
         rotary_emb: tuple[torch.Tensor, torch.Tensor] | None = None,
         attn_metadata: AttentionMetadata | None = None,
     ) -> torch.Tensor:
-        # Fused QKV projection
-        qkv, _ = self.to_qkv(hidden_states)
-
-        q_size = self.num_heads * self.head_dim
-        kv_size = self.num_kv_heads * self.head_dim
-        query, key, value = qkv.split([q_size, kv_size, kv_size], dim=-1)
+        if self.fuse_qkv:
+            qkv, _ = self.to_qkv(hidden_states)
+            q_size = self.num_heads * self.head_dim
+            kv_size = self.num_kv_heads * self.head_dim
+            query, key, value = qkv.split([q_size, kv_size, kv_size], dim=-1)
+        else:
+            query = self.to_q(hidden_states)
+            key = self.to_k(hidden_states)
+            value = self.to_v(hidden_states)
 
         # Apply QK normalization
         query = self.norm_q(query)
@@ -890,6 +914,10 @@ class WanTransformer3DModel(nn.Module):
         quant_config: QuantizationConfig | None = None,
     ):
         super().__init__()
+        self.fuse_qkv = getattr(quant_config, "fuse_qkv", True)
+        self.preserve_svdquant_fp32 = quant_config is not None and quant_config.get_name() == "svdquant"
+        if not self.fuse_qkv:
+            self.packed_modules_mapping = {}
         # Store config for compatibility
         self.config = type(
             "Config",
@@ -1146,6 +1174,8 @@ class WanTransformer3DModel(nn.Module):
             (".attn1.to_qkv", ".attn1.to_k", "k"),
             (".attn1.to_qkv", ".attn1.to_v", "v"),
         ]
+        if not self.fuse_qkv:
+            stacked_params_mapping = []
         # Expose packed shard mappings for LoRA handling of fused projections.
         self.stacked_params_mapping = stacked_params_mapping
 
@@ -1166,9 +1196,9 @@ class WanTransformer3DModel(nn.Module):
             # Pre-fused to_qkv tensors (from offline MXFP8 merged checkpoint) fall
             # through to the else branch and are loaded directly.
             for param_name, weight_name, shard_id in stacked_params_mapping:
-                if weight_name not in original_name:
+                if weight_name + "." not in original_name:
                     continue
-                lookup_name = original_name.replace(weight_name, param_name)
+                lookup_name = original_name.replace(weight_name + ".", param_name + ".")
                 # Skip weights that belong to PP stages other than this one
                 if is_pp_missing_parameter(lookup_name, self) or lookup_name not in params_dict:
                     break
@@ -1203,6 +1233,19 @@ class WanTransformer3DModel(nn.Module):
                     continue
 
                 param = params_dict[lookup_name]
+
+                # AutoRound retains Diffusers' protected FP32 parameters.
+                # Loading into the default BF16 allocation would round them.
+                if (
+                    getattr(self, "preserve_svdquant_fp32", False)
+                    and loaded_weight.dtype == torch.float32
+                    and any(
+                        part in {"time_embedder", "scale_shift_table", "norm1", "norm2", "norm3"}
+                        for part in lookup_name.split(".")
+                    )
+                    and param.dtype != torch.float32
+                ):
+                    param.data = param.data.float()
 
                 # Handle RMSNorm weights that need to be sharded for TP
                 # These norms are applied after ColumnParallelLinear outputs,

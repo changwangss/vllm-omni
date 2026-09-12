@@ -43,7 +43,7 @@ def test_config_from_checkpoint_dict() -> None:
     ("kwargs", "message"),
     [
         ({"rank": 0}, "rank must be positive"),
-        ({"precision": "int4"}, "NVFP4 checkpoints only"),
+        ({"precision": "int4"}, "NVFP4 or MXFP4 checkpoints only"),
         ({"act_unsigned": True}, "unsigned activations"),
     ],
 )
