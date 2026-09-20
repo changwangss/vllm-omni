@@ -47,6 +47,9 @@ def test_build_quant_config_autoround(data_type, group_size, packing_format):
 def test_inc_fp4_linear_method(mocker, data_type, group_size, scheme_name, excluded):
     from torch.nn import LayerNorm
     from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
+    from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (
+        CompressedTensorsLinearMethod,
+    )
     from vllm.model_executor.layers.quantization.inc.inc_linear import INCLinearMethod
 
     from vllm_omni.quantization import build_quant_config
@@ -67,11 +70,15 @@ def test_inc_fp4_linear_method(mocker, data_type, group_size, scheme_name, exclu
         packing_format="auto_round:llm_compressor",
         extra_config={"proj": {"bits": 16}} if excluded else None,
     )
-    method = config.get_quant_method(mocker.Mock(spec=LinearBase), "proj")
+    layer = mocker.Mock(spec=LinearBase)
+    method = config.get_quant_method(layer, "proj")
     if excluded:
         assert isinstance(method, UnquantizedLinearMethod)
         mxfp4_kernel.assert_not_called()
         nvfp4_kernel.assert_not_called()
+    elif data_type == "nv_fp":
+        assert isinstance(method, CompressedTensorsLinearMethod)
+        assert type(layer.scheme).__name__ == scheme_name
     else:
         assert isinstance(method, INCLinearMethod)
         assert type(method.scheme).__name__ == scheme_name

@@ -63,16 +63,20 @@ class OmniINCConfig(INCConfig):
         """Get quantization methods for AutoRound checkpoints."""
         if self.data_type == "nv_fp":
             from vllm.model_executor.layers.linear import LinearBase, UnquantizedLinearMethod
+            from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (
+                CompressedTensorsLinearMethod,
+            )
             from vllm.model_executor.layers.quantization.compressed_tensors.schemes import (
                 CompressedTensorsW4A4Fp4,
             )
-            from vllm.model_executor.layers.quantization.inc.inc_linear import INCLinearMethod
 
             layer_config = self.config_parser.resolve(layer, prefix)
             if isinstance(layer, LinearBase):
                 if not layer_config.quantized:
                     return UnquantizedLinearMethod()
-                return INCLinearMethod(CompressedTensorsW4A4Fp4())
+                scheme = CompressedTensorsW4A4Fp4()
+                layer.scheme = scheme
+                return CompressedTensorsLinearMethod(self)
             return None
 
         # Check if this is an AutoRound MXFP8 checkpoint (data_type="mx_fp")
